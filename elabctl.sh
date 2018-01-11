@@ -5,6 +5,8 @@
 # CONFIGURATION
 # where do you want your backups to end up?
 declare BACKUP_DIR='/var/backups/elabftw'
+# where do you want your snapshots to end up?
+declare SNAPSHOT_DIR='/var/backups/elabftw/snapshots'
 # where do we store the config file?
 declare CONF_FILE='/etc/elabftw.yml'
 # where do we store the MySQL database and the uploaded files?
@@ -65,6 +67,54 @@ function backup()
     zip -rq "$zipfile" $CONF_FILE
 
     echo "Done. Copy ${BACKUP_DIR} over to another computer."
+}
+
+# create a snapshot archive with rsync
+function snapshot()
+{
+    SOURCE_DIR=$DATA_DIR/web
+    echo "Using snapshot directory $SNAPSHOT_DIR"
+    # Create snapshot directory if it does not exist ("dummy" folder needs to be there to prevent
+    # the "ls -td" command in line 85 to exit without error when the first snapshot is generated.
+    if [ ! -d $SNAPSHOT_DIR/dummy ] ; then	\
+    mkdir -p $SNAPSHOT_DIR/dummy ;	\
+    fi ;
+    # Get date & time
+    DATE=`date '+%Y-%m-%d_%T'` ;
+    echo "DATE: "$DATE
+    # Determine the name of the most recent snapshot directory
+    MOST_RECENT_SNAPSHOT=`ls -td $SNAPSHOT_DIR/* | head -n 1` ;
+    echo "MOST_RECENT_SNAPSHOT: "$MOST_RECENT_SNAPSHOT
+    # Make a hard-link-only copy of the most recent snapshot if that exists
+    if [ -d $MOST_RECENT_SNAPSHOT ] ; then	\
+    echo "Hard-linking..." ;	\
+    cp -al $MOST_RECENT_SNAPSHOT $SNAPSHOT_DIR/$DATE ;	\
+    fi;
+
+    # /var/lib/mysql-files is the only allowed location in the mysql container to hold the database dump.
+    # The elabftw user needs to have FILE privileges. Execute as root in mysql: GRANT FILE ON *.* TO 'elabftw'@'localhost';
+    # dump sql database to a separate file for each table. Since by default, mysqldump appends the time/date
+    # to each dump file, this has to be disabled, since otherwise every dumped file would be different from the previous.
+    echo "Dumping mysql database..." ;
+    docker exec mysql bash -c 'mysqldump --tab /var/lib/mysql-files --skip-dump-date -u$MYSQL_USER -p$MYSQL_PASSWORD $MYSQL_DATABASE' > /dev/null 2>&1
+    # copy the folder from the container to the host
+    docker cp mysql:/var/lib/mysql-files ${SNAPSHOT_DIR}
+
+    # rsync from the system into the most recent snapshot.
+    rsync -va --delete --delete-excluded $SOURCE_DIR/ $CONF_FILE $SNAPSHOT_DIR/$DATE/files ;
+    echo "Files and configuration snapshot done."
+    # When transferring the files of the mysqldump, some files will have different file modification dates despite beeing identical
+    # Therefore use the checksum option in order to only transfer modified files.
+    rsync -va --checksum --delete --delete-excluded $SNAPSHOT_DIR/mysql-files $SNAPSHOT_DIR/$DATE/mysql ;
+    echo "Database snapshot done."
+
+    # Remove dump directory
+    rm -rf $SNAPSHOT_DIR/mysql-files
+
+    # Update the mtime to reflect the snapshot time
+    touch $SNAPSHOT_DIR/$DATE ;
+
+    echo "Snapshot done."
 }
 
 # generate info for reporting a bug
@@ -197,6 +247,7 @@ function help()
         refresh         Recreate the containers if they need to be
         restart         Restart the containers
         self-update     Update the elabctl script
+        smapshot        Make a snapshot of all data
         status          Show status of running containers
         start           Start the containers
         stop            Stop the containers
@@ -210,6 +261,7 @@ function help()
 function info()
 {
     echo "Backup directory: ${BACKUP_DIR}"
+    echo "Snapshot directory: ${SNAPSHOT_DIR}"
     echo "Data directory: ${DATA_DIR}"
     echo "Log file: ${LOG_FILE}"
     echo "Man file: ${MAN_FILE}"
@@ -620,7 +672,7 @@ esac
 
 # available commands
 declare -A commands
-for valid in backup bugreport help info infos install logs php-logs self-update start status stop refresh restart uninstall update upgrade usage version
+for valid in backup bugreport help info infos install logs php-logs self-update snapshot start status stop refresh restart uninstall update upgrade usage version
 do
     commands[$valid]=1
 done
