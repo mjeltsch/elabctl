@@ -8,7 +8,7 @@ See the main [documentation](https://elabftw.readthedocs.io/).
 As root:
 
 ~~~bash
-wget -qO- https://get.elabftw.net > /usr/bin/elabctl && chmod +x /usr/bin/elabctl
+wget -qO- https://raw.githubusercontent.com/mjeltsch/elabctl/master/elabctl.sh > /usr/bin/elabctl && chmod +x /usr/bin/elabctl
 ~~~
 
 ## Use
