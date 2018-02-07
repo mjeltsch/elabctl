@@ -5,8 +5,6 @@
 # CONFIGURATION
 # where do you want your backups to end up?
 declare BACKUP_DIR='/var/backups/elabftw'
-# where do you want your snapshots to end up?
-declare SNAPSHOT_DIR='/var/backups/elabftw/snapshots'
 # where do we store the config file?
 declare CONF_FILE='/etc/elabftw.yml'
 # where do we store the MySQL database and the uploaded files?
@@ -70,8 +68,13 @@ function backup()
 }
 
 # create a snapshot archive with rsync
+# To execute it every day, you can create a file in the /etc/cron.d/ folder:
+# 30 4 * * 2,3,4,5,6 /usr/bin/elabctl snapshot > /dev/null
+# This would take a snapshot every day (except on Sundays and Mondays) at 4:30 am
+# and all messages would be silenced
 function snapshot()
 {
+    SNAPSHOT_DIR=${BACKUP_DIR}/snapshots
     SOURCE_DIR=$DATA_DIR/web
     echo "Using snapshot directory $SNAPSHOT_DIR"
     # Create snapshot directory if it does not exist ("dummy" folder needs to be there to prevent
@@ -80,7 +83,7 @@ function snapshot()
     mkdir -p $SNAPSHOT_DIR/dummy ;	\
     fi ;
     # Get date & time
-    DATE=`date '+%Y-%m-%d_%T'` ;
+    DATE=`date '+%Y-%m-%d_%H-%M-%S'` ;
     echo "DATE: "$DATE
     # Determine the name of the most recent snapshot directory
     MOST_RECENT_SNAPSHOT=`ls -td $SNAPSHOT_DIR/* | head -n 1` ;
@@ -95,26 +98,33 @@ function snapshot()
     # The elabftw user needs to have FILE privileges. Execute as root in mysql: GRANT FILE ON *.* TO 'elabftw'@'localhost';
     # dump sql database to a separate file for each table. Since by default, mysqldump appends the time/date
     # to each dump file, this has to be disabled, since otherwise every dumped file would be different from the previous.
+    # Using the "--tab /var/lib/mysql-files" argument for the mysqldump results in individual files for each table, which
+    # makes snapshoting a bit more efficient, but restoring more complicated. If you use a deduplicating backup system which
+    # deduplicates at the block level, there is not significant difference in the required space use between monolithic
+    # dumps and individual table dumps.
     echo "Dumping mysql database..." ;
-    docker exec mysql bash -c 'mysqldump --tab /var/lib/mysql-files --skip-dump-date -u$MYSQL_USER -p$MYSQL_PASSWORD $MYSQL_DATABASE' > /dev/null 2>&1
+    docker exec mysql bash -c 'mysqldump  --skip-dump-date -u$MYSQL_USER -p$MYSQL_PASSWORD -r mysql_dump-$DATE.sql $MYSQL_DATABASE' > /dev/null 2>&1
     # copy the folder from the container to the host
-    docker cp mysql:/var/lib/mysql-files ${SNAPSHOT_DIR}
+    docker cp mysql:mysql_dump-$DATE.sql ${SNAPSHOT_DIR}
 
     # rsync from the system into the most recent snapshot.
-    rsync -va --delete --delete-excluded $SOURCE_DIR/ $CONF_FILE $SNAPSHOT_DIR/$DATE/files ;
+    rsync -va --delete --delete-excluded $SOURCE_DIR/ $CONF_FILE $SNAPSHOT_DIR/$DATE/web ;
     echo "Files and configuration snapshot done."
     # When transferring the files of the mysqldump, some files will have different file modification dates despite beeing identical
     # Therefore use the checksum option in order to only transfer modified files.
-    rsync -va --checksum --delete --delete-excluded $SNAPSHOT_DIR/mysql-files $SNAPSHOT_DIR/$DATE/mysql ;
+    rsync -va --checksum --delete --delete-excluded $SNAPSHOT_DIR/mysql_dump-$DATE.sql $SNAPSHOT_DIR/$DATE ;
     echo "Database snapshot done."
 
     # Remove dump directory
-    rm -rf $SNAPSHOT_DIR/mysql-files
+    rm -rf $SNAPSHOT_DIR/mysql_dump-$DATE.sql
 
     # Update the mtime to reflect the snapshot time
     touch $SNAPSHOT_DIR/$DATE ;
 
     echo "Snapshot done."
+    # Now you can copy the snapshot to a backup server, e.g.:
+    # rsync -a $SNAPSHOT_DIR admin@backupserver:/volume1/home/admin/Backups/elabftw/vmware/
+    # This can also be done via a crontab entry
 }
 
 # generate info for reporting a bug
